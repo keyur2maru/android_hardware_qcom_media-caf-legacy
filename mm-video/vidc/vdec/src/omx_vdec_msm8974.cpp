@@ -3668,6 +3668,12 @@ OMX_ERRORTYPE  omx_vdec::set_parameter(OMX_IN OMX_HANDLETYPE     hComp,
               DEBUG_PRINT_ERROR("\n Sync frame setting failed");
               eRet = OMX_ErrorUnsupportedSetting;
             }
+            /*Setting sync frame decoding on driver might change buffer
+             * requirements so update them here*/
+            if (get_buffer_req(&drv_ctx.ip_buf)) {
+              DEBUG_PRINT_ERROR("\n Sync frame setting failed: falied to get buffer requirements");
+              eRet = OMX_ErrorUnsupportedSetting;
+            }
         }
       }
       break;
@@ -3699,6 +3705,8 @@ OMX_ERRORTYPE  omx_vdec::set_parameter(OMX_IN OMX_HANDLETYPE     hComp,
 		      DEBUG_PRINT_ERROR("Failed to enable Smooth Streaming on driver.");
 		      eRet = OMX_ErrorHardware;
 	      }
+#else
+       eRet = OMX_ErrorUnsupportedSetting;
 #endif
       }
      break;
@@ -6028,6 +6036,7 @@ OMX_ERRORTYPE  omx_vdec::empty_this_buffer_proxy(OMX_IN OMX_HANDLETYPE         h
 	buf.timestamp.tv_sec = frameinfo.timestamp / 1000000;
 	buf.timestamp.tv_usec = (frameinfo.timestamp % 1000000);
 	buf.flags |= (buffer->nFlags & OMX_BUFFERFLAG_CODECCONFIG) ? V4L2_QCOM_BUF_FLAG_CODECCONFIG: 0;
+	buf.flags |= (buffer->nFlags & OMX_BUFFERFLAG_DECODEONLY) ? V4L2_QCOM_BUF_FLAG_DECODEONLY: 0;
 
 	rc = ioctl(drv_ctx.video_driver_fd, VIDIOC_QBUF, &buf);
 	if(rc)
@@ -6934,6 +6943,7 @@ OMX_ERRORTYPE omx_vdec::fill_buffer_done(OMX_HANDLETYPE hComp,
     bool is_interlaced = (drv_ctx.interlace != VDEC_InterlaceFrameProgressive);
 
     if (output_capability == V4L2_PIX_FMT_MPEG4 ||
+      output_capability == V4L2_PIX_FMT_MPEG2 ||
       output_capability == V4L2_PIX_FMT_DIVX ||
       output_capability == V4L2_PIX_FMT_DIVX_311)
       is_duplicate_ts_valid = false;
@@ -6948,6 +6958,22 @@ OMX_ERRORTYPE omx_vdec::fill_buffer_done(OMX_HANDLETYPE hComp,
     if (buffer->nFilledLen > 0) {
       time_stamp_dts.get_next_timestamp(buffer,
         is_interlaced && is_duplicate_ts_valid);
+        if (m_debug_timestamp)
+        {
+          {
+            OMX_TICKS expected_ts = 0;
+            m_timestamp_list.pop_min_ts(expected_ts);
+            if (is_interlaced && is_duplicate_ts_valid) {
+              m_timestamp_list.pop_min_ts(expected_ts);
+            }
+            DEBUG_PRINT_LOW("\n Current timestamp (%lld),Popped TIMESTAMP (%lld) from list",
+                           buffer->nTimeStamp, expected_ts);
+
+            if (buffer->nTimeStamp != expected_ts) {
+              DEBUG_PRINT_ERROR("\n ERROR in omx_vdec::async_message_process timestamp Check");
+            }
+          }
+        }
     } else {
       m_inp_err_count++;
       time_stamp_dts.remove_time_stamp(
@@ -6955,23 +6981,7 @@ OMX_ERRORTYPE omx_vdec::fill_buffer_done(OMX_HANDLETYPE hComp,
                 is_interlaced && is_duplicate_ts_valid);
     }
 
-    if (m_debug_timestamp)
-    {
-      {
-        OMX_TICKS expected_ts = 0;
-        m_timestamp_list.pop_min_ts(expected_ts);
-        if (is_interlaced && is_duplicate_ts_valid) {
-          m_timestamp_list.pop_min_ts(expected_ts);
-        }
-        DEBUG_PRINT_LOW("\n Current timestamp (%lld),Popped TIMESTAMP (%lld) from list",
-                       buffer->nTimeStamp, expected_ts);
 
-        if (buffer->nTimeStamp != expected_ts)
-        {
-          DEBUG_PRINT_ERROR("\n ERROR in omx_vdec::async_message_process timestamp Check");
-        }
-      }
-    }
   }
   if (m_cb.FillBufferDone)
   {
@@ -7241,6 +7251,14 @@ int omx_vdec::async_message_process (void *context, void* message)
   if (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_FLAG_DECODEONLY)
   {
     omxhdr->nFlags |= OMX_BUFFERFLAG_DECODEONLY;
+  }
+  if (omxhdr && (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_DROP_FRAME) &&
+       !(v4l2_buf_ptr->flags & V4L2_QCOM_BUF_FLAG_DECODEONLY) &&
+       !(v4l2_buf_ptr->flags & V4L2_BUF_FLAG_EOS))
+  {
+      omx->post_event ((unsigned)NULL,(unsigned int)omxhdr,
+        OMX_COMPONENT_GENERATE_FTB);
+      break;
   }
   if (v4l2_buf_ptr->flags & V4L2_QCOM_BUF_DATA_CORRUPT)
   {
@@ -8873,6 +8891,7 @@ OMX_ERRORTYPE omx_vdec::enable_extradata(OMX_U32 requested_extradata,
       }
     }
   }
+  ret = get_buffer_req(&drv_ctx.op_buf);
   return ret;
 }
 
