@@ -360,6 +360,10 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
                            mScanSourcesPending = true;
                     }
                }
+               if (mTimeDiscontinuityPending && mRenderer != NULL){
+                   mRenderer->signalTimeDiscontinuity();
+                   mTimeDiscontinuityPending = false;
+               }
             }
             break;
         }
@@ -785,10 +789,11 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
             if (mDriver != NULL) {
                 sp<DashPlayerDriver> driver = mDriver.promote();
                 if (driver != NULL) {
-                    driver->notifySeekComplete();
                     if( newSeekTime >= 0 ) {
+                        mRenderer->notifySeekPosition(newSeekTime);
                         driver->notifyPosition( newSeekTime );
                         mSource->notifyRenderingPosition(newSeekTime);
+                        driver->notifySeekComplete();
                      }
                 }
             }
@@ -1017,6 +1022,18 @@ void DashPlayer::onMessageReceived(const sp<AMessage> &msg) {
 }
 
 void DashPlayer::finishFlushIfPossible() {
+
+    /* check if Audio Decoder has been shutdown for handling audio discontinuity
+       ,in that case Audio decoder has to be reinstaniated*/
+    if (mAudioDecoder == NULL && (mFlushingAudio == SHUT_DOWN) &&
+        !mResetInProgress && !mResetPostponed &&
+        ((mVideoDecoder != NULL) && (mFlushingVideo == NONE || mFlushingVideo == AWAITING_DISCONTINUITY)))
+    {
+        ALOGV("Resuming Audio after Shutdown(Discontinuity)");
+        mFlushingAudio = NONE;
+        postScanSources();
+        return;
+    }
     //If reset was postponed after one of the streams is flushed, complete it now
     if (mResetPostponed) {
         ALOGV("finishFlushIfPossible Handle reset postpone ");

@@ -55,6 +55,7 @@ struct DashPlayer::Renderer : public AHandler {
 
     void pause();
     void resume();
+    void notifySeekPosition(int64_t seekTime);
 #endif /* QCOM_WFD_SINK */
     enum {
         kWhatEOS                = 'eos ',
@@ -101,6 +102,7 @@ private:
 
     int64_t mAnchorTimeMediaUs;
     int64_t mAnchorTimeRealUs;
+    int64_t mSeekTimeUs;
 
     Mutex mFlushLock;  // protects the following 2 member vars.
     bool mFlushingAudio;
@@ -115,6 +117,7 @@ private:
 
     int64_t mLastPositionUpdateUs;
     int64_t mVideoLateByUs;
+    int64_t mAVSyncDelayWindowUs;
 
     bool onDrainAudioQueue();
     void postDrainAudioQueue(int64_t delayUs = 0);
