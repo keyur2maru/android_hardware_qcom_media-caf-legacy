@@ -617,7 +617,7 @@ typedef struct QOMX_VIDEO_SYNTAXHDRTYPE
    OMX_U32 nSize;           /** Size of the structure in bytes */
    OMX_VERSIONTYPE nVersion;/** OMX specification version information */
    OMX_U32 nPortIndex;      /** Portindex which is extended by this structure */
-   OMX_U32 nBytes;    	    /** The number of bytes filled in to the buffer */
+   OMX_U32 nBytes;          /** The number of bytes filled in to the buffer */
    OMX_U8 data[1];          /** Buffer to store the header information */
 } QOMX_VIDEO_SYNTAXHDRTYPE;
 
@@ -648,10 +648,10 @@ typedef struct QOMX_VIDEO_INTRAPERIODTYPE
    OMX_VERSIONTYPE nVersion;/** OMX specification version information */
    OMX_U32 nPortIndex;      /** Portindex which is extended by this structure */
    OMX_U32 nIDRPeriod;      /** This specifies coding a frame as IDR after every nPFrames
-			        of intra frames. If this parameter is set to 0, only the
-				first frame of the encode session is an IDR frame. This
-				field is ignored for non-AVC codecs and is used only for
-				codecs that support IDR Period */
+                                of intra frames. If this parameter is set to 0, only the
+                                first frame of the encode session is an IDR frame. This
+                                field is ignored for non-AVC codecs and is used only for
+                                codecs that support IDR Period */
    OMX_U32 nPFrames;         /** The number of "P" frames between two "I" frames */
    OMX_U32 nBFrames;         /** The number of "B" frames between two "I" frames */
 } QOMX_VIDEO_INTRAPERIODTYPE;
@@ -822,6 +822,7 @@ typedef struct OMX_QCOM_EXTRADATA_FRAMEINFO
    OMX_QCOM_DISPLAY_ASPECT_RATIO displayAspectRatio;
    OMX_U32                nConcealedMacroblocks;
    OMX_U32                nFrameRate;
+   OMX_TICKS              nTimeStamp;
 } OMX_QCOM_EXTRADATA_FRAMEINFO;
 
 typedef struct OMX_QCOM_EXTRADATA_FRAMEDIMENSION
@@ -1048,10 +1049,10 @@ typedef struct QOMX_INDEXEXTRADATATYPE {
 } QOMX_INDEXEXTRADATATYPE;
 
 typedef struct QOMX_INDEXTIMESTAMPREORDER {
-	OMX_U32 nSize;
-	OMX_VERSIONTYPE nVersion;
-	OMX_U32 nPortIndex;
-	OMX_BOOL bEnable;
+    OMX_U32 nSize;
+    OMX_VERSIONTYPE nVersion;
+    OMX_U32 nPortIndex;
+    OMX_BOOL bEnable;
 } QOMX_INDEXTIMESTAMPREORDER;
 
 #define OMX_QCOM_INDEX_PARAM_VIDEO_SYNCFRAMEDECODINGMODE "OMX.QCOM.index.param.video.SyncFrameDecodingMode"

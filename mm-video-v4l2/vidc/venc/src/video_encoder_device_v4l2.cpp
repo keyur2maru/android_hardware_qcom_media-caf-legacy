@@ -40,6 +40,11 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <media/msm_media_info.h>
 #include <cutils/properties.h>
 
+#ifdef _ANDROID_
+#include <media/hardware/HardwareAPI.h>
+#include <gralloc_priv.h>
+#endif
+
 #define EXTRADATA_IDX(__num_planes) (__num_planes  - 1)
 
 #define MPEG4_SP_START 0
@@ -95,6 +100,7 @@ static const unsigned int h264_profile_level_table[][5]= {
     {8704,522240,50000000,OMX_VIDEO_AVCLevel42,OMX_VIDEO_AVCProfileBaseline},
     {22080,589824,135000000,OMX_VIDEO_AVCLevel5,OMX_VIDEO_AVCProfileBaseline},
     {36864,983040,240000000,OMX_VIDEO_AVCLevel51,OMX_VIDEO_AVCProfileBaseline},
+    {36864,2073600,240000000,OMX_VIDEO_AVCLevel52,OMX_VIDEO_AVCProfileBaseline},
     {0,0,0,0,0},
 
     {99,1485,64000,OMX_VIDEO_AVCLevel1,OMX_VIDEO_AVCProfileHigh},
@@ -113,6 +119,7 @@ static const unsigned int h264_profile_level_table[][5]= {
     {8704,522240,50000000,OMX_VIDEO_AVCLevel42,OMX_VIDEO_AVCProfileHigh},
     {22080,589824,135000000,OMX_VIDEO_AVCLevel5,OMX_VIDEO_AVCProfileHigh},
     {36864,983040,240000000,OMX_VIDEO_AVCLevel51,OMX_VIDEO_AVCProfileHigh},
+    {36864,2073600,240000000,OMX_VIDEO_AVCLevel52,OMX_VIDEO_AVCProfileHigh},
     {0,0,0,0,0},
 
     {99,1485,64000,OMX_VIDEO_AVCLevel1,OMX_VIDEO_AVCProfileMain},
@@ -131,6 +138,7 @@ static const unsigned int h264_profile_level_table[][5]= {
     {8704,522240,50000000,OMX_VIDEO_AVCLevel42,OMX_VIDEO_AVCProfileMain},
     {22080,589824,135000000,OMX_VIDEO_AVCLevel5,OMX_VIDEO_AVCProfileMain},
     {36864,983040,240000000,OMX_VIDEO_AVCLevel51,OMX_VIDEO_AVCProfileMain},
+    {36864,2073600,240000000,OMX_VIDEO_AVCLevel52,OMX_VIDEO_AVCProfileBaseline},
     {0,0,0,0,0}
 
 };
@@ -277,7 +285,7 @@ void* venc_dev::async_venc_message_thread (void *input)
                 venc_msg.statuscode=VEN_S_SUCCESS;
                 omxhdr=omx_venc_base->m_out_mem_ptr+v4l2_buf.index;
                 venc_msg.buf.len= v4l2_buf.m.planes->bytesused;
-                venc_msg.buf.offset = 0;
+                venc_msg.buf.offset = v4l2_buf.m.planes->data_offset;
                 venc_msg.buf.flags = 0;
                 venc_msg.buf.ptrbuffer = (OMX_U8 *)omx_venc_base->m_pOutput_pmem[v4l2_buf.index].buffer;
                 venc_msg.buf.clientdata=(void*)omxhdr;
@@ -563,21 +571,17 @@ bool venc_dev::venc_open(OMX_U32 codec)
 #ifdef OUTPUT_BUFFER_LOG
         strcat(outputfilename, "263");
 #endif
-    }
-
-    if (codec == OMX_VIDEO_CodingAVC) {
+    } else if (codec == OMX_VIDEO_CodingAVC) {
         m_sVenc_cfg.codectype = V4L2_PIX_FMT_H264;
         codec_profile.profile = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE;
         profile_level.level = V4L2_MPEG_VIDEO_H264_LEVEL_1_0;
 #ifdef OUTPUT_BUFFER_LOG
         strcat(outputfilename, "264");
 #endif
-    }
-
-    if (codec == OMX_VIDEO_CodingVPX) {
+    } else if (codec == OMX_VIDEO_CodingVPX) {
         m_sVenc_cfg.codectype = V4L2_PIX_FMT_VP8;
-        codec_profile.profile = V4L2_MPEG_VIDEO_H264_PROFILE_BASELINE;
-        profile_level.level = V4L2_MPEG_VIDEO_H264_LEVEL_1_0;
+        codec_profile.profile = V4L2_MPEG_VIDC_VIDEO_VP8_UNUSED;
+        profile_level.level = V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_0;
 #ifdef OUTPUT_BUFFER_LOG
         strcat(outputfilename, "ivf");
 #endif
@@ -676,6 +680,7 @@ bool venc_dev::venc_open(OMX_U32 codec)
     m_sOutput_buff_property.mincount = m_sOutput_buff_property.actualcount = bufreq.count;
 
 
+    resume_in_stopped = 0;
     metadatamode = 0;
 
     control.id = V4L2_CID_MPEG_VIDEO_HEADER_MODE;
@@ -1194,6 +1199,17 @@ bool venc_dev::venc_set_param(void *paramData,OMX_INDEXTYPE index )
                 //TBD, lot of other variables to be updated, yet to decide
                 break;
             }
+        case (OMX_INDEXTYPE)OMX_IndexParamVideoVp8:
+            {
+                DEBUG_PRINT_LOW("venc_set_param:OMX_IndexParamVideoVp8\n");
+                OMX_VIDEO_PARAM_VP8TYPE* pParam = (OMX_VIDEO_PARAM_VP8TYPE*)paramData;
+                if (!venc_set_profile_level (pParam->eProfile, pParam->eLevel)) {
+                    DEBUG_PRINT_ERROR("\nERROR: Unsuccessful in updating Profile and level %d, %d",
+                                        pParam->eProfile, pParam->eLevel);
+                    return false;
+                }
+                break;
+            }
         case OMX_IndexParamVideoIntraRefresh:
             {
                 DEBUG_PRINT_LOW("venc_set_param:OMX_IndexParamVideoIntraRefresh\n");
@@ -1426,7 +1442,8 @@ bool venc_dev::venc_set_config(void *configData, OMX_INDEXTYPE index)
 unsigned venc_dev::venc_stop( void)
 {
     struct venc_msg venc_msg;
-    int rc = 0;
+    struct v4l2_requestbuffers bufreq;
+    int rc = 0, ret = 0;
 
     if (!stopped) {
         enum v4l2_buf_type cap_type;
@@ -1440,6 +1457,17 @@ unsigned venc_dev::venc_stop( void)
                         cap_type, rc);
             } else
                 streaming[OUTPUT_PORT] = false;
+
+            DEBUG_PRINT_LOW("Releasing registered buffers from driver on o/p port");
+            bufreq.memory = V4L2_MEMORY_USERPTR;
+            bufreq.count = 0;
+            bufreq.type = V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+            ret = ioctl(m_nDriver_fd, VIDIOC_REQBUFS, &bufreq);
+
+            if (ret) {
+                DEBUG_PRINT_ERROR("\nERROR: VIDIOC_REQBUFS OUTPUT MPLANE Failed \n ");
+                return false;
+            }
         }
 
         if (!rc && streaming[CAPTURE_PORT]) {
@@ -1451,11 +1479,25 @@ unsigned venc_dev::venc_stop( void)
                         cap_type, rc);
             } else
                 streaming[CAPTURE_PORT] = false;
+
+            DEBUG_PRINT_LOW("Releasing registered buffers from driver on capture port");
+            bufreq.memory = V4L2_MEMORY_USERPTR;
+            bufreq.count = 0;
+            bufreq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+            ret = ioctl(m_nDriver_fd, VIDIOC_REQBUFS, &bufreq);
+
+            if (ret) {
+                DEBUG_PRINT_ERROR("\nERROR: VIDIOC_REQBUFS CAPTURE MPLANE Failed \n ");
+                return false;
+            }
         }
 
-        if (!rc) {
+        if (!rc && !ret) {
             venc_stop_done();
             stopped = 1;
+            /*set flag to re-configure when started again*/
+            resume_in_stopped = 1;
+
         }
     }
 
@@ -1523,6 +1565,12 @@ unsigned venc_dev::venc_start(void)
 
     venc_config_print();
 
+    if(resume_in_stopped){
+        /*set buffercount when restarted*/
+        venc_reconfig_reqbufs();
+        resume_in_stopped = 0;
+    }
+
     /* Check if slice_delivery mode is enabled & max slices is sufficient for encoding complete frame */
     if (slice_mode.enable && multislice.mslice_size &&
             (m_sVenc_cfg.input_width *  m_sVenc_cfg.input_height)/(256 * multislice.mslice_size) >= MAX_SUPPORTED_SLICES_PER_FRAME) {
@@ -1574,6 +1622,29 @@ void venc_dev::venc_config_print()
     DEBUG_PRINT_HIGH("\nENC_CONFIG: IntraMB/Frame: %ld, HEC: %ld, IDR Period: %ld\n",
             intra_refresh.mbcount, hec.header_extension, idrperiod.idrperiod);
 
+}
+
+bool venc_dev::venc_reconfig_reqbufs()
+{
+    struct v4l2_requestbuffers bufreq;
+
+    bufreq.memory = V4L2_MEMORY_USERPTR;
+    bufreq.count = m_sInput_buff_property.actualcount;
+    bufreq.type=V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE;
+    if(ioctl(m_nDriver_fd,VIDIOC_REQBUFS, &bufreq)) {
+            DEBUG_PRINT_ERROR("\n VIDIOC_REQBUFS OUTPUT_MPLANE Failed when resume\n");
+            return false;
+    }
+
+    bufreq.memory = V4L2_MEMORY_USERPTR;
+    bufreq.count = m_sOutput_buff_property.actualcount;
+    bufreq.type = V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE;
+    if(ioctl(m_nDriver_fd,VIDIOC_REQBUFS, &bufreq))
+    {
+            DEBUG_PRINT_ERROR("\nERROR: Request for setting o/p buffer count failed when resume\n");
+            return false;
+    }
+    return true;
 }
 
 unsigned venc_dev::venc_flush( unsigned port)
@@ -1776,30 +1847,52 @@ bool venc_dev::venc_empty_buf(void *buffer, void *pmem_data_buf, unsigned index,
         plane.length = bufhdr->nAllocLen;
         plane.bytesused = bufhdr->nFilledLen;
     } else {
-        DEBUG_PRINT_LOW("\n Shared PMEM addr for i/p PMEM UseBuf/AllocateBuf: %p", bufhdr->pBuffer);
-
-        if (metadatamode && !color_format) { // meta Buffer + Camera buffers
+        // --------------------------------------------------------------------------------------
+        // [Usage]             [metadatamode] [Type]        [color_format] [Where is buffer info]
+        // ---------------------------------------------------------------------------------------
+        // Camera-2              1            CameraSource   0              meta-handle
+        // Camera-3              1            GrallocSource  0              gralloc-private-handle
+        // surface encode (RBG)  1            GrallocSource  1              bufhdr (color-converted)
+        // CPU (Eg: MediaCodec)  0            --             0              bufhdr
+        // ---------------------------------------------------------------------------------------
+        if (metadatamode) {
             meta_buf = (encoder_media_buffer_type *)bufhdr->pBuffer;
 
             if (!meta_buf)
                 return false;
 
-            plane.m.userptr = index;
-            // Contents of a meta-buffer queued with 0-length can be potentially junk
-            if (!bufhdr->nFilledLen) {
-                plane.data_offset = 0;
-                plane.length = bufhdr->nAllocLen;
-                plane.bytesused = 0;
+            if (!color_format) {
+                plane.m.userptr = index;
+                if (meta_buf->buffer_type == kMetadataBufferTypeCameraSource) {
+                    plane.data_offset = meta_buf->meta_handle->data[1];
+                    plane.length = meta_buf->meta_handle->data[2];
+                    plane.bytesused = meta_buf->meta_handle->data[2];
+                    DEBUG_PRINT_LOW("venc_empty_buf: camera buf: fd = %d filled %d of %d",
+                            fd, plane.bytesused, plane.length);
+                } else if (meta_buf->buffer_type == kMetadataBufferTypeGrallocSource) {
+                    private_handle_t *handle = (private_handle_t *)meta_buf->meta_handle;
+                    fd = handle->fd;
+                    plane.data_offset = 0;
+                    plane.length = handle->size;
+                    plane.bytesused = handle->size;
+                    DEBUG_PRINT_LOW("venc_empty_buf: Opaque camera buf: fd = %d filled %d of %d",
+                            fd, plane.bytesused, plane.length);
+                }
             } else {
-                plane.data_offset = meta_buf->meta_handle->data[1];
-                plane.length = meta_buf->meta_handle->data[2];
-                plane.bytesused = meta_buf->meta_handle->data[2];
+                plane.m.userptr = (unsigned long) bufhdr->pBuffer;
+                plane.data_offset = bufhdr->nOffset;
+                plane.length = bufhdr->nAllocLen;
+                plane.bytesused = bufhdr->nFilledLen;
+                DEBUG_PRINT_LOW("venc_empty_buf: Opaque non-camera buf: fd = %d filled %d of %d",
+                        fd, plane.bytesused, plane.length);
             }
-        } else { // meta Buffer + Gralloc buffers || pmem buffers
+        } else {
             plane.m.userptr = (unsigned long) bufhdr->pBuffer;
             plane.data_offset = bufhdr->nOffset;
             plane.length = bufhdr->nAllocLen;
             plane.bytesused = bufhdr->nFilledLen;
+            DEBUG_PRINT_LOW("venc_empty_buf: non-camera buf: fd = %d filled %d of %d",
+                    fd, plane.bytesused, plane.length);
         }
     }
 
@@ -2257,9 +2350,33 @@ bool venc_dev::venc_set_profile_level(OMX_U32 eProfile,OMX_U32 eLevel)
             case OMX_VIDEO_AVCLevel51:
                 requested_level.level = V4L2_MPEG_VIDEO_H264_LEVEL_5_1;
                 break;
+            case OMX_VIDEO_AVCLevelMax:
+                requested_level.level = V4L2_MPEG_VIDEO_H264_LEVEL_5_2;
+                break;
             default :
                 DEBUG_PRINT_ERROR("\nERROR: Unsupported H.264 level= %lu",
                         requested_level.level);
+                return false;
+                break;
+        }
+    } else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_VP8) {
+        if (!(eProfile == OMX_VIDEO_VP8ProfileMain)) {
+            DEBUG_PRINT_ERROR("\nERROR: Unsupported VP8 profile = %u",
+                        eProfile);
+            return false;
+        }
+        requested_profile.profile = V4L2_MPEG_VIDC_VIDEO_VP8_UNUSED;
+        m_profile_set = true;
+        switch(eLevel) {
+            case OMX_VIDEO_VP8Level_Version0:
+                requested_level.level = V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_0;
+                break;
+            case OMX_VIDEO_VP8Level_Version1:
+                requested_level.level = V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_1;
+                break;
+            default:
+                DEBUG_PRINT_ERROR("\nERROR: Unsupported VP8 level= %lu",
+                            eLevel);
                 return false;
                 break;
         }
@@ -2275,11 +2392,6 @@ bool venc_dev::venc_set_profile_level(OMX_U32 eProfile,OMX_U32 eLevel)
             control.id = V4L2_CID_MPEG_VIDEO_MPEG4_PROFILE;
         } else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_H263) {
             control.id = V4L2_CID_MPEG_VIDC_VIDEO_H263_PROFILE;
-        } else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_VP8) {
-            DEBUG_PRINT_ERROR("\n No Profile and LEVEL Setting for VP8 \n");
-            m_profile_set = true;
-            m_level_set = true;
-            return true;
         } else {
             DEBUG_PRINT_ERROR("\n Wrong CODEC \n");
             return false;
@@ -2311,6 +2423,8 @@ bool venc_dev::venc_set_profile_level(OMX_U32 eProfile,OMX_U32 eLevel)
             control.id = V4L2_CID_MPEG_VIDEO_MPEG4_LEVEL;
         } else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_H263) {
             control.id = V4L2_CID_MPEG_VIDC_VIDEO_H263_LEVEL;
+        } else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_VP8) {
+            control.id = V4L2_CID_MPEG_VIDC_VIDEO_VP8_PROFILE_LEVEL;
         } else {
             DEBUG_PRINT_ERROR("\n Wrong CODEC \n");
             return false;
@@ -2482,7 +2596,7 @@ bool venc_dev::venc_set_entropy_config(OMX_BOOL enable, OMX_U32 i_cabac_level)
         }
 
         DEBUG_PRINT_LOW("Success IOCTL set control for id=%d, value=%d\n", control.id, control.value);
-        entropy.longentropysel=control.value;
+        entropy.cabacmodel=control.value;
     } else if (!enable) {
         control.value =  V4L2_MPEG_VIDEO_H264_ENTROPY_MODE_CAVLC;
         control.id = V4L2_CID_MPEG_VIDEO_H264_ENTROPY_MODE;
@@ -3075,8 +3189,38 @@ bool venc_dev::venc_get_profile_level(OMX_U32 *eProfile,OMX_U32 *eLevel)
             case V4L2_MPEG_VIDEO_H264_LEVEL_5_1:
                 *eLevel = OMX_VIDEO_AVCLevel51;
                 break;
+            case V4L2_MPEG_VIDEO_H264_LEVEL_5_2:
+                *eLevel = OMX_VIDEO_AVCLevelMax;
+                break;
             default :
                 *eLevel = OMX_VIDEO_AVCLevelMax;
+                status = false;
+                break;
+        }
+    }
+    else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_VP8) {
+        switch (codec_profile.profile) {
+            case V4L2_MPEG_VIDC_VIDEO_VP8_UNUSED:
+                *eProfile = OMX_VIDEO_VP8ProfileMain;
+                break;
+            default:
+                *eProfile = OMX_VIDEO_VP8ProfileMax;
+                status = false;
+                break;
+        }
+        if (!status) {
+            return status;
+        }
+
+        switch (profile_level.level) {
+            case V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_0:
+                *eLevel = OMX_VIDEO_VP8Level_Version0;
+                break;
+            case V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_1:
+                *eLevel = OMX_VIDEO_VP8Level_Version1;
+                break;
+            default:
+                *eLevel = OMX_VIDEO_VP8LevelMax;
                 status = false;
                 break;
         }
@@ -3204,7 +3348,31 @@ bool venc_dev::venc_validate_profile_level(OMX_U32 *eProfile, OMX_U32 *eLevel)
             return false;
         }
     } else if (m_sVenc_cfg.codectype == V4L2_PIX_FMT_VP8) {
-        DEBUG_PRINT_HIGH("Disregarding profile/level setting for VP8\n");
+        if (*eProfile == 0) {
+            *eProfile = OMX_VIDEO_VP8ProfileMain;
+        } else {
+            switch (codec_profile.profile) {
+                case V4L2_MPEG_VIDC_VIDEO_VP8_UNUSED:
+                    *eProfile = OMX_VIDEO_VP8ProfileMain;
+                    break;
+                default:
+                    DEBUG_PRINT_ERROR("\n %s(): Unknown VP8 profile", __func__);
+                    return false;
+            }
+        }
+        if (*eLevel == 0) {
+            switch (profile_level.level) {
+                case V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_0:
+                    *eLevel = OMX_VIDEO_VP8Level_Version0;
+                    break;
+                case V4L2_MPEG_VIDC_VIDEO_VP8_VERSION_1:
+                    *eLevel = OMX_VIDEO_VP8Level_Version1;
+                    break;
+                default:
+                    DEBUG_PRINT_ERROR("\n %s(): Unknown VP8 level", __func__);
+                    return false;
+            }
+        }
         return true;
     } else {
         DEBUG_PRINT_LOW("\n Invalid codec type");
@@ -3252,11 +3420,11 @@ bool venc_dev::venc_validate_profile_level(OMX_U32 *eProfile, OMX_U32 *eLevel)
     }
 
     if ((*eLevel == OMX_VIDEO_MPEG4LevelMax) || (*eLevel == OMX_VIDEO_AVCLevelMax)
-            || (*eLevel == OMX_VIDEO_H263LevelMax)) {
+            || (*eLevel == OMX_VIDEO_H263LevelMax || (*eLevel == OMX_VIDEO_VP8ProfileMax))) {
         *eLevel = new_level;
     }
 
-    DEBUG_PRINT_HIGH("%s: Returning with eProfile = %lu"
+    DEBUG_PRINT_LOW("%s: Returning with eProfile = %lu\n"
             "Level = %lu", __func__, *eProfile, *eLevel);
 
     return true;
